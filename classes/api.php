@@ -1,0 +1,361 @@
+<?php
+// This file is part of MuTMS suite of plugins for Moodle™ LMS.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+// phpcs:disable moodle.Files.BoilerplateComment.CommentEndedTooSoon
+
+namespace tool_mutrain;
+
+use core\exception\coding_exception;
+use core\exception\moodle_exception;
+use stdClass;
+
+/**
+ * Credit ledger API.
+ *
+ * Single point of entry for all ledger credit operations.
+ * Other plugins call this — never write to tool_mutrain_ledger directly.
+ *
+ * @package    tool_mutrain
+ * @copyright  2026 Petr Skoda
+ * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
+ */
+final class api {
+
+    /**
+     * Post credits to a user's framework ledger.
+     *
+     * @param int    $userid
+     * @param int    $frameworkid
+     * @param float  $credits        Credit value to post (must be positive)
+     * @param string $sourcetype     e.g. 'external_submission', 'manual'
+     * @param int    $sourceinstanceid  The relevant entity id (submissionid, etc.), 0 if N/A
+     * @param int    $timecredited   Unix timestamp of when the activity was completed
+     * @param array  $evidence       Optional key/value pairs serialized to evidencejson
+     * @return int   The new ledger record id
+     * @throws coding_exception on invalid input
+     * @throws moodle_exception if framework does not exist
+     */
+    public static function post_credit(
+        int $userid,
+        int $frameworkid,
+        float $credits,
+        string $sourcetype,
+        int $sourceinstanceid,
+        int $timecredited,
+        array $evidence = [],
+        int $createdby = 0
+    ): int {
+        global $DB;
+
+        if ($credits <= 0) {
+            throw new coding_exception('Credits must be a positive number');
+        }
+
+        if (!$DB->record_exists('tool_mutrain_framework', ['id' => $frameworkid])) {
+            throw new moodle_exception('invalidrecord', 'error', '', 'tool_mutrain_framework');
+        }
+
+        $record = new stdClass();
+        $record->userid = $userid;
+        $record->frameworkid = $frameworkid;
+        $record->credits = $credits;
+        $record->sourcetype = $sourcetype;
+        $record->sourceinstanceid = $sourceinstanceid ?: null;
+        $record->timecredited = $timecredited;
+        $record->timecreated = time();
+        $record->createdby = $createdby;
+        $record->revokedtime = null;
+        $record->revokedby = null;
+        $record->evidencejson = !empty($evidence) ? json_encode($evidence) : null;
+
+        return (int)$DB->insert_record('tool_mutrain_ledger', $record);
+    }
+
+    /**
+     * Get total active (non-revoked) credits for a user in a framework.
+     *
+     * @param int $userid
+     * @param int $frameworkid
+     * @return float
+     */
+    public static function get_user_total(int $userid, int $frameworkid): float {
+        global $DB;
+
+        $sql = "SELECT COALESCE(SUM(credits), 0)
+                  FROM {tool_mutrain_ledger}
+                 WHERE userid = :userid
+                       AND frameworkid = :frameworkid
+                       AND revokedtime IS NULL";
+        $params = ['userid' => $userid, 'frameworkid' => $frameworkid];
+
+        return (float)$DB->get_field_sql($sql, $params);
+    }
+
+    /**
+     * Get total active credits within a rolling time window.
+     *
+     * @param int $userid
+     * @param int $frameworkid
+     * @param int $windowstart  Only credits with timecredited >= this value count
+     * @return float
+     */
+    public static function get_user_total_in_window(
+        int $userid,
+        int $frameworkid,
+        int $windowstart
+    ): float {
+        global $DB;
+
+        $sql = "SELECT COALESCE(SUM(credits), 0)
+                  FROM {tool_mutrain_ledger}
+                 WHERE userid = :userid
+                       AND frameworkid = :frameworkid
+                       AND revokedtime IS NULL
+                       AND timecredited >= :windowstart";
+        $params = [
+            'userid' => $userid,
+            'frameworkid' => $frameworkid,
+            'windowstart' => $windowstart,
+        ];
+
+        return (float)$DB->get_field_sql($sql, $params);
+    }
+
+    /**
+     * Get the full ledger for a user in a framework, ordered by timecredited DESC.
+     *
+     * @param int  $userid
+     * @param int  $frameworkid
+     * @param bool $include_revoked  Default false
+     * @return array  Array of ledger record objects
+     */
+    public static function get_user_ledger(
+        int $userid,
+        int $frameworkid,
+        bool $include_revoked = false
+    ): array {
+        global $DB;
+
+        $params = ['userid' => $userid, 'frameworkid' => $frameworkid];
+        $revokedfilter = '';
+        if (!$include_revoked) {
+            $revokedfilter = 'AND revokedtime IS NULL';
+        }
+
+        $sql = "SELECT *
+                  FROM {tool_mutrain_ledger}
+                 WHERE userid = :userid
+                       AND frameworkid = :frameworkid
+                       $revokedfilter
+              ORDER BY timecredited DESC, id DESC";
+
+        return array_values($DB->get_records_sql($sql, $params));
+    }
+
+    /**
+     * Revoke a specific ledger record.
+     *
+     * @param int $ledgerid
+     * @param int $revokedby  userid performing the revocation
+     * @throws moodle_exception if record not found or already revoked
+     */
+    public static function revoke_credit(int $ledgerid, int $revokedby): void {
+        global $DB;
+
+        $record = $DB->get_record('tool_mutrain_ledger', ['id' => $ledgerid]);
+        if (!$record) {
+            throw new moodle_exception('invalidrecord', 'error', '', 'tool_mutrain_ledger');
+        }
+        if ($record->revokedtime !== null) {
+            throw new moodle_exception('invalidrecord', 'error', '', 'tool_mutrain_ledger');
+        }
+
+        $DB->update_record('tool_mutrain_ledger', (object)[
+            'id' => $ledgerid,
+            'revokedtime' => time(),
+            'revokedby' => $revokedby,
+        ]);
+    }
+
+    /**
+     * Check whether a credit has already been posted for a given source instance.
+     *
+     * @param int    $userid
+     * @param int    $frameworkid
+     * @param string $sourcetype
+     * @param int    $sourceinstanceid
+     * @return bool
+     */
+    public static function credit_exists(
+        int $userid,
+        int $frameworkid,
+        string $sourcetype,
+        int $sourceinstanceid
+    ): bool {
+        global $DB;
+
+        return $DB->record_exists_select(
+            'tool_mutrain_ledger',
+            'userid = :userid
+             AND frameworkid = :frameworkid
+             AND sourcetype = :sourcetype
+             AND sourceinstanceid = :sourceinstanceid
+             AND revokedtime IS NULL',
+            [
+                'userid' => $userid,
+                'frameworkid' => $frameworkid,
+                'sourcetype' => $sourcetype,
+                'sourceinstanceid' => $sourceinstanceid,
+            ]
+        );
+    }
+
+    /**
+     * Get all active ledger records across all frameworks for a user.
+     *
+     * @param int  $userid
+     * @param bool $include_revoked
+     * @return array  Keyed by frameworkid, each value an array of ledger records
+     */
+    public static function get_user_full_transcript(
+        int $userid,
+        bool $include_revoked = false
+    ): array {
+        global $DB;
+
+        $params = ['userid' => $userid];
+        $revokedfilter = '';
+        if (!$include_revoked) {
+            $revokedfilter = 'AND revokedtime IS NULL';
+        }
+
+        $sql = "SELECT *
+                  FROM {tool_mutrain_ledger}
+                 WHERE userid = :userid
+                       $revokedfilter
+              ORDER BY frameworkid ASC, timecredited DESC, id DESC";
+
+        $records = $DB->get_records_sql($sql, $params);
+
+        $transcript = [];
+        foreach ($records as $record) {
+            $fid = (int)$record->frameworkid;
+            if (!isset($transcript[$fid])) {
+                $transcript[$fid] = [];
+            }
+            $transcript[$fid][] = $record;
+        }
+
+        return $transcript;
+    }
+
+    /**
+     * Get category rules for a framework.
+     *
+     * @param int $frameworkid
+     * @return array Array of rule objects
+     */
+    public static function get_category_rules(int $frameworkid): array {
+        global $DB;
+
+        return array_values($DB->get_records(
+            'tool_mutrain_framework_category',
+            ['frameworkid' => $frameworkid],
+            'sortorder, categoryname'
+        ));
+    }
+
+    /**
+     * Get per-category credit totals for a user from ledger entries.
+     *
+     * @param int $userid
+     * @param int $frameworkid
+     * @param int $windowstart Only include entries with timecredited >= this (0 = no window)
+     * @return array Associative array: ['Ethics' => 4.0, 'General' => 18.0, ...]
+     */
+    public static function get_user_category_totals(int $userid, int $frameworkid, int $windowstart = 0): array {
+        global $DB;
+
+        $params = ['userid' => $userid, 'frameworkid' => $frameworkid];
+        $windowclause = '';
+        if ($windowstart > 0) {
+            $windowclause = 'AND timecredited >= :windowstart';
+            $params['windowstart'] = $windowstart;
+        }
+        $records = $DB->get_records_select(
+            'tool_mutrain_ledger',
+            "userid = :userid AND frameworkid = :frameworkid
+             AND revokedtime IS NULL $windowclause",
+            $params
+        );
+        $totals = [];
+        foreach ($records as $r) {
+            $evidence = $r->evidencejson ? json_decode($r->evidencejson, true) : [];
+            $type = $evidence['credittype'] ?? 'Uncategorized';
+            $totals[$type] = ($totals[$type] ?? 0.0) + (float)$r->credits;
+        }
+        return $totals;
+    }
+
+    /**
+     * Get detailed category compliance status.
+     *
+     * @param int $userid
+     * @param int $frameworkid
+     * @param int $windowstart
+     * @return array Array of detail arrays with keys: categoryname, mincredits, earned, compliant, gap
+     */
+    public static function get_category_compliance_detail(int $userid, int $frameworkid, int $windowstart = 0): array {
+        $rules = self::get_category_rules($frameworkid);
+        if (empty($rules)) {
+            return [];
+        }
+        $totals = self::get_user_category_totals($userid, $frameworkid, $windowstart);
+        $detail = [];
+        foreach ($rules as $rule) {
+            $earned = $totals[$rule->categoryname] ?? 0.0;
+            $detail[] = [
+                'categoryname' => $rule->categoryname,
+                'mincredits' => (float)$rule->mincredits,
+                'earned' => $earned,
+                'compliant' => $earned >= (float)$rule->mincredits,
+                'gap' => max(0.0, (float)$rule->mincredits - $earned),
+            ];
+        }
+        return $detail;
+    }
+
+    /**
+     * Check if a user meets all category requirements.
+     *
+     * @param int $userid
+     * @param int $frameworkid
+     * @param int $windowstart
+     * @return bool True if no rules or all rules met
+     */
+    public static function is_category_compliant(int $userid, int $frameworkid, int $windowstart = 0): bool {
+        $detail = self::get_category_compliance_detail($userid, $frameworkid, $windowstart);
+        if (empty($detail)) {
+            return true;
+        }
+        foreach ($detail as $d) {
+            if (!$d['compliant']) {
+                return false;
+            }
+        }
+        return true;
+    }
+}
