@@ -358,4 +358,236 @@ final class api {
         }
         return true;
     }
+
+    // ── Sub-period management ─────────────────────────────────────────────────
+
+    /**
+     * Get all sub-periods for a framework, ordered by sortorder.
+     */
+    public static function get_subperiods(int $frameworkid): array {
+        global $DB;
+        return array_values($DB->get_records(
+            'tool_mutrain_framework_subperiod',
+            ['frameworkid' => $frameworkid],
+            'sortorder ASC, id ASC'
+        ));
+    }
+
+    /**
+     * Get all category rules for a sub-period.
+     */
+    public static function get_subperiod_categories(int $subperiodid): array {
+        global $DB;
+        return array_values($DB->get_records(
+            'tool_mutrain_subperiod_category',
+            ['subperiodid' => $subperiodid],
+            'mincredits DESC'
+        ));
+    }
+
+    /**
+     * Add a sub-period to a framework.
+     * mode: 'relative' or 'absolute'
+     * Relative: offsetdays + lengthdays used; startdate/enddate ignored.
+     * Absolute: startdate/enddate used; offsetdays/lengthdays ignored.
+     */
+    public static function add_subperiod(
+        int $frameworkid,
+        string $name,
+        string $mode,
+        int $offsetdays,
+        int $lengthdays,
+        int $startdate,
+        int $enddate,
+        float $requiredcredits,
+        int $sortorder = 0
+    ): int {
+        global $DB;
+
+        if (!in_array($mode, ['relative', 'absolute'])) {
+            throw new \coding_exception('mode must be relative or absolute');
+        }
+        if (trim($name) === '') {
+            throw new \invalid_parameter_exception('Sub-period name cannot be empty');
+        }
+        if ($mode === 'relative' && $lengthdays < 1) {
+            throw new \invalid_parameter_exception('lengthdays must be >= 1');
+        }
+        if ($mode === 'absolute' && $enddate <= $startdate) {
+            throw new \invalid_parameter_exception('enddate must be after startdate');
+        }
+
+        $record = new \stdClass();
+        $record->frameworkid     = $frameworkid;
+        $record->name            = trim($name);
+        $record->mode            = $mode;
+        $record->offsetdays      = $mode === 'relative' ? (int)$offsetdays : 0;
+        $record->lengthdays      = $mode === 'relative' ? (int)$lengthdays : 365;
+        $record->startdate       = $mode === 'absolute' ? (int)$startdate  : 0;
+        $record->enddate         = $mode === 'absolute' ? (int)$enddate    : 0;
+        $record->requiredcredits = round((float)$requiredcredits, 5);
+        $record->sortorder       = (int)$sortorder;
+        $record->timecreated     = time();
+
+        return (int)$DB->insert_record('tool_mutrain_framework_subperiod', $record);
+    }
+
+    /**
+     * Remove a sub-period and all its category rules.
+     */
+    public static function remove_subperiod(int $subperiodid): void {
+        global $DB;
+        $DB->delete_records('tool_mutrain_subperiod_category', ['subperiodid' => $subperiodid]);
+        $DB->delete_records('tool_mutrain_framework_subperiod', ['id' => $subperiodid]);
+    }
+
+    /**
+     * Add a category rule to a sub-period.
+     * Throws if a rule for this category already exists on the sub-period.
+     */
+    public static function add_subperiod_category(
+        int $subperiodid,
+        string $categoryname,
+        float $mincredits
+    ): int {
+        global $DB;
+
+        if (trim($categoryname) === '') {
+            throw new \invalid_parameter_exception('Category name cannot be empty');
+        }
+        if ($mincredits <= 0) {
+            throw new \invalid_parameter_exception('mincredits must be > 0');
+        }
+        if ($DB->record_exists('tool_mutrain_subperiod_category',
+                ['subperiodid' => $subperiodid, 'categoryname' => trim($categoryname)])) {
+            throw new \invalid_parameter_exception(
+                'A rule for category "' . $categoryname . '" already exists on this sub-period'
+            );
+        }
+
+        $record = new \stdClass();
+        $record->subperiodid  = $subperiodid;
+        $record->categoryname = trim($categoryname);
+        $record->mincredits   = round((float)$mincredits, 5);
+
+        return (int)$DB->insert_record('tool_mutrain_subperiod_category', $record);
+    }
+
+    /**
+     * Remove a sub-period category rule.
+     */
+    public static function remove_subperiod_category(int $id): void {
+        global $DB;
+        $DB->delete_records('tool_mutrain_subperiod_category', ['id' => $id]);
+    }
+
+    /**
+     * Get detailed sub-period compliance breakdown for a user/framework pair.
+     *
+     * Returns array of sub-period detail objects, each containing:
+     *   ->subperiod  — the subperiod record
+     *   ->windowstart — resolved unix timestamp of period start
+     *   ->windowend   — resolved unix timestamp of period end
+     *   ->isclosed    — bool: window_end < now
+     *   ->totalearned — float: credits earned in window
+     *   ->categories  — array of {categoryname, mincredits, earned, pass}
+     *   ->pass        — bool: sub-period requirement fully met
+     *   ->alert       — bool: closed AND failed
+     */
+    public static function get_user_subperiod_detail(int $userid, int $frameworkid): array {
+        global $DB;
+
+        $subperiods = self::get_subperiods($frameworkid);
+        if (empty($subperiods)) {
+            return [];
+        }
+
+        // Get allocation dates for this user/framework.
+        // tool_mutrain_credit links to tool_muprog via frameworkid.
+        // We need the allocation timestart for relative mode.
+        $allocation = $DB->get_record_sql(
+            "SELECT pa.timestart, pa.timeend
+               FROM {tool_muprog_allocation} pa
+               JOIN {tool_muprog_item} pi ON pi.programid = pa.programid
+              WHERE pi.creditframeworkid = :fwid
+                AND pa.userid = :uid
+              ORDER BY pa.timestart DESC",
+            ['fwid' => $frameworkid, 'uid' => $userid],
+            IGNORE_MULTIPLE
+        );
+
+        $now = time();
+        $result = [];
+
+        foreach ($subperiods as $sp) {
+            if ($sp->mode === 'absolute') {
+                $wstart = (int)$sp->startdate;
+                $wend   = (int)$sp->enddate;
+            } else {
+                // Relative — anchor to allocation start
+                $anchor = $allocation ? (int)$allocation->timestart : 0;
+                $wstart = $anchor + ((int)$sp->offsetdays * 86400);
+                $wend   = $wstart + ((int)$sp->lengthdays * 86400);
+            }
+
+            $isclosed = $wend < $now;
+
+            // Sum credits in window from ledger (non-revoked).
+            $ledger = $DB->get_records_select(
+                'tool_mutrain_ledger',
+                'userid = :uid AND frameworkid = :fwid
+                 AND revokedtime IS NULL
+                 AND timecredited >= :wstart AND timecredited < :wend',
+                ['uid' => $userid, 'fwid' => $frameworkid,
+                 'wstart' => $wstart, 'wend' => $wend]
+            );
+
+            $totalearned = 0.0;
+            $bycat = [];
+            foreach ($ledger as $entry) {
+                $totalearned += (float)$entry->credits;
+                $ev = json_decode($entry->evidencejson ?? '{}', true);
+                $ct = $ev['credittype'] ?? '';
+                if ($ct !== '') {
+                    $bycat[$ct] = ($bycat[$ct] ?? 0.0) + (float)$entry->credits;
+                }
+            }
+
+            // Evaluate category rules.
+            $catrules = self::get_subperiod_categories((int)$sp->id);
+            $catdetail = [];
+            $pass = true;
+
+            if ((float)$sp->requiredcredits > 0 && $totalearned < (float)$sp->requiredcredits) {
+                $pass = false;
+            }
+
+            foreach ($catrules as $rule) {
+                $earned = $bycat[$rule->categoryname] ?? 0.0;
+                $catpass = $earned >= (float)$rule->mincredits;
+                if (!$catpass) {
+                    $pass = false;
+                }
+                $catdetail[] = (object)[
+                    'categoryname' => $rule->categoryname,
+                    'mincredits'   => (float)$rule->mincredits,
+                    'earned'       => $earned,
+                    'pass'         => $catpass,
+                ];
+            }
+
+            $result[] = (object)[
+                'subperiod'   => $sp,
+                'windowstart' => $wstart,
+                'windowend'   => $wend,
+                'isclosed'    => $isclosed,
+                'totalearned' => $totalearned,
+                'categories'  => $catdetail,
+                'pass'        => $pass,
+                'alert'       => $isclosed && !$pass,
+            ];
+        }
+
+        return $result;
+    }
 }

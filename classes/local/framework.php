@@ -887,6 +887,83 @@ final class framework {
             );
         }
 
+        // ── Step: Sub-period compliance evaluation ───────────────────────────────
+        // Evaluate sub-period requirements for frameworks that have them.
+        // Sets subperiodcompliant (1=all pass, 0=any fail, NULL=no subperiods)
+        // and subperiodalert (1=closed window failed, needs admin review).
+
+        $subperiodframeworks = $DB->get_records_sql(
+            "SELECT DISTINCT frameworkid FROM {tool_mutrain_framework_subperiod}
+              WHERE frameworkid IN (SELECT id FROM {tool_mutrain_framework} WHERE archived = 0)"
+            . ($frameworkid ? " AND frameworkid = :fwid" : ""),
+            $frameworkid ? ['fwid' => $frameworkid] : []
+        );
+
+        if (!empty($subperiodframeworks)) {
+            foreach ($subperiodframeworks as $spfw) {
+                $fwid = (int)$spfw->frameworkid;
+
+                $creditrows = $DB->get_records_select(
+                    'tool_mutrain_credit',
+                    'frameworkid = :fwid' . ($userid ? ' AND userid = :uid' : ''),
+                    array_merge(['fwid' => $fwid], $userid ? ['uid' => $userid] : [])
+                );
+
+                foreach ($creditrows as $creditrow) {
+                    $uid = (int)$creditrow->userid;
+                    $detail = \tool_mutrain\api::get_user_subperiod_detail($uid, $fwid);
+
+                    if (empty($detail)) {
+                        $DB->set_field('tool_mutrain_credit', 'subperiodcompliant', null,
+                            ['userid' => $uid, 'frameworkid' => $fwid]);
+                        $DB->set_field('tool_mutrain_credit', 'subperiodalert', 0,
+                            ['userid' => $uid, 'frameworkid' => $fwid]);
+                        continue;
+                    }
+
+                    $allpass = true;
+                    $anyalert = false;
+                    foreach ($detail as $spdetail) {
+                        if (!$spdetail->pass) {
+                            $allpass = false;
+                        }
+                        if ($spdetail->alert) {
+                            $anyalert = true;
+                        }
+                    }
+
+                    $DB->set_field('tool_mutrain_credit', 'subperiodcompliant',
+                        $allpass ? 1 : 0,
+                        ['userid' => $uid, 'frameworkid' => $fwid]);
+                    $DB->set_field('tool_mutrain_credit', 'subperiodalert',
+                        $anyalert ? 1 : 0,
+                        ['userid' => $uid, 'frameworkid' => $fwid]);
+                }
+            }
+        }
+
+        // For frameworks with no sub-periods, ensure subperiodcompliant=NULL, subperiodalert=0.
+        $nosub_condition = $frameworkid
+            ? "id = :fwid AND id NOT IN (SELECT DISTINCT frameworkid FROM {tool_mutrain_framework_subperiod})"
+            : "id NOT IN (SELECT DISTINCT frameworkid FROM {tool_mutrain_framework_subperiod})";
+        $nosub_params = $frameworkid ? ['fwid' => $frameworkid] : [];
+        $nosubframeworks = $DB->get_records_select('tool_mutrain_framework', $nosub_condition, $nosub_params);
+        foreach ($nosubframeworks as $nosubfw) {
+            $nosub_credit_params = array_merge(
+                ['fwid' => (int)$nosubfw->id],
+                $userid ? ['uid' => $userid] : []
+            );
+            $DB->execute(
+                "UPDATE {tool_mutrain_credit}
+                    SET subperiodcompliant = NULL, subperiodalert = 0
+                  WHERE frameworkid = :fwid"
+                . ($userid ? " AND userid = :uid" : "")
+                . " AND (subperiodcompliant IS NOT NULL OR subperiodalert != 0)",
+                $nosub_credit_params
+            );
+        }
+        // ── End sub-period evaluation ─────────────────────────────────────────────
+
         // Proration step — for frameworks with proratejoins=1, calculate per-user
         // effective credit requirement based on allocation dates.
         $prorationframeworks = $DB->get_records_select(
@@ -949,7 +1026,7 @@ final class framework {
             SELECT mcr.*
               FROM {tool_mutrain_credit} mcr
               JOIN {tool_mutrain_framework} tfr ON tfr.id = mcr.frameworkid
-             WHERE (mcr.credits IS NULL OR mcr.credits < COALESCE(mcr.proratedcredits, tfr.requiredcredits) OR mcr.categorycompliant = 0) AND timereached IS NOT NULL
+             WHERE (mcr.credits IS NULL OR mcr.credits < COALESCE(mcr.proratedcredits, tfr.requiredcredits) OR mcr.categorycompliant = 0 OR mcr.subperiodcompliant = 0) AND timereached IS NOT NULL
                    /* userwhere */ /* frameworkwhere */
           ORDER BY frameworkid, userid");
         if ($userid) {
@@ -1010,7 +1087,7 @@ final class framework {
             SELECT mcr.*
               FROM {tool_mutrain_credit} mcr
               JOIN {tool_mutrain_framework} tfr ON tfr.id = mcr.frameworkid
-             WHERE mcr.credits >= COALESCE(mcr.proratedcredits, tfr.requiredcredits) AND mcr.categorycompliant = 1
+             WHERE mcr.credits >= COALESCE(mcr.proratedcredits, tfr.requiredcredits) AND mcr.categorycompliant = 1 AND (mcr.subperiodcompliant = 1 OR mcr.subperiodcompliant IS NULL)
                    AND mcr.timereached IS NULL AND tfr.archived = 0
                    /* userwhere */ /* frameworkwhere */
           ORDER BY mcr.frameworkid, mcr.userid");

@@ -72,6 +72,8 @@
         <FIELD NAME="userid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false" COMMENT="User with credits"/>
         <FIELD NAME="credits" TYPE="number" LENGTH="10" NOTNULL="false" SEQUENCE="false" DECIMALS="5" COMMENT="Sum of obtained credits via completion, NULL means not calculated yet"/>
         <FIELD NAME="categorycompliant" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="1" SEQUENCE="false" COMMENT="1 if all category requirements are met, 0 otherwise. Always 1 for frameworks with no category rules."/>
+        <FIELD NAME="subperiodcompliant" TYPE="int" LENGTH="1" NOTNULL="false" SEQUENCE="false" COMMENT="NULL = no subperiods, 1 = all sub-periods pass, 0 = any fail"/>
+        <FIELD NAME="subperiodalert" TYPE="int" LENGTH="1" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="1 = closed sub-period window failed, needs admin review"/>
         <FIELD NAME="proratedcredits" TYPE="number" LENGTH="10" NOTNULL="false" SEQUENCE="false" DECIMALS="5" COMMENT="Prorated credit requirement. NULL = use framework requiredcredits."/>
         <FIELD NAME="timereached" TYPE="int" LENGTH="10" NOTNULL="false" SEQUENCE="false" COMMENT="Date when event that user reached required number of credits was triggered, may reset back to NULL later"/>
       </FIELDS>
@@ -125,6 +127,37 @@
       <INDEXES>
         <INDEX NAME="frameworkid-categoryname" UNIQUE="true" FIELDS="frameworkid, categoryname"/>
       </INDEXES>
+    </TABLE>
+    <TABLE NAME="tool_mutrain_framework_subperiod" COMMENT="Sub-period requirements within a credit framework cycle">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="frameworkid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="name" TYPE="char" LENGTH="255" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="mode" TYPE="char" LENGTH="8" NOTNULL="true" DEFAULT="relative" SEQUENCE="false" COMMENT="relative or absolute"/>
+        <FIELD NAME="offsetdays" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Relative mode: days from allocation start"/>
+        <FIELD NAME="lengthdays" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="365" SEQUENCE="false" COMMENT="Relative mode: duration in days"/>
+        <FIELD NAME="startdate" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Absolute mode: unix timestamp"/>
+        <FIELD NAME="enddate" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" COMMENT="Absolute mode: unix timestamp"/>
+        <FIELD NAME="requiredcredits" TYPE="number" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" DECIMALS="5"/>
+        <FIELD NAME="sortorder" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+        <FIELD NAME="timecreated" TYPE="int" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="frameworkid" TYPE="foreign" FIELDS="frameworkid" REFTABLE="tool_mutrain_framework" REFFIELDS="id"/>
+      </KEYS>
+    </TABLE>
+    <TABLE NAME="tool_mutrain_subperiod_category" COMMENT="Per-category minimum credit rules within a sub-period">
+      <FIELDS>
+        <FIELD NAME="id" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="true"/>
+        <FIELD NAME="subperiodid" TYPE="int" LENGTH="10" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="categoryname" TYPE="char" LENGTH="255" NOTNULL="true" SEQUENCE="false"/>
+        <FIELD NAME="mincredits" TYPE="number" LENGTH="10" NOTNULL="true" DEFAULT="0" SEQUENCE="false" DECIMALS="5"/>
+      </FIELDS>
+      <KEYS>
+        <KEY NAME="primary" TYPE="primary" FIELDS="id"/>
+        <KEY NAME="subperiodid" TYPE="foreign" FIELDS="subperiodid" REFTABLE="tool_mutrain_framework_subperiod" REFFIELDS="id"/>
+      </KEYS>
     </TABLE>
   </TABLES>
 </XMLDB>

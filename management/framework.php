@@ -107,4 +107,79 @@ if (!$framework->archived && has_capability('tool/mutrain:manageframeworks', $co
     echo '<br /><div class="buttons">' . $OUTPUT->render($addbutton) . '</div>';
 }
 
+// Sub-period requirements section.
+echo $OUTPUT->heading(get_string('subperiodrequirements', 'tool_mutrain'), 4);
+
+$subperiods = \tool_mutrain\api::get_subperiods((int)$framework->id);
+
+if ($subperiods) {
+    $sptable = new html_table();
+    $sptable->head = [
+        get_string('subperiodname', 'tool_mutrain'),
+        get_string('subperiodmode', 'tool_mutrain'),
+        get_string('subperiodwindow', 'tool_mutrain'),
+        get_string('requiredcredits', 'tool_mutrain'),
+        get_string('subperiodcategoryrules', 'tool_mutrain'),
+        '',
+    ];
+    $sptable->attributes['class'] = 'admintable generaltable';
+    foreach ($subperiods as $sp) {
+        if ($sp->mode === 'absolute') {
+            $window = userdate((int)$sp->startdate, '%Y-%m-%d') . ' – ' . userdate((int)$sp->enddate, '%Y-%m-%d');
+        } else {
+            $window = 'Offset ' . (int)$sp->offsetdays . 'd, length ' . (int)$sp->lengthdays . 'd';
+        }
+
+        $catrules = \tool_mutrain\api::get_subperiod_categories((int)$sp->id);
+        $catcell = '';
+        if ($catrules) {
+            $parts = [];
+            foreach ($catrules as $rule) {
+                $part = s($rule->categoryname) . ': ' . format_float($rule->mincredits, 1);
+                if (!$framework->archived && has_capability('tool/mutrain:manageframeworks', $context)) {
+                    $rmurl = new \core\url('/admin/tool/mutrain/management/subperiod_category_remove.php', ['id' => $rule->id]);
+                    $rmicon = new \tool_mulib\output\ajax_form\icon($rmurl, get_string('remove'), 'i/delete');
+                    $rmicon->set_form_size('sm');
+                    $part .= ' ' . $OUTPUT->render($rmicon);
+                }
+                $parts[] = html_writer::tag('span', $part, ['class' => 'badge badge-secondary mr-1']);
+            }
+            $catcell = implode(' ', $parts);
+        } else {
+            $catcell = html_writer::tag('span', get_string('none'), ['class' => 'text-muted small']);
+        }
+        if (!$framework->archived && has_capability('tool/mutrain:manageframeworks', $context)) {
+            $addcaturl = new \core\url('/admin/tool/mutrain/management/subperiod_category_add.php', ['id' => $sp->id]);
+            $addcatbtn = new \tool_mulib\output\ajax_form\button($addcaturl, get_string('subperiodcategoryadd', 'tool_mutrain'));
+            $addcatbtn->set_form_size('sm');
+            $catcell .= ' ' . $OUTPUT->render($addcatbtn);
+        }
+
+        $row = new html_table_row();
+        $row->cells[] = s($sp->name);
+        $row->cells[] = s($sp->mode);
+        $row->cells[] = $window;
+        $row->cells[] = (float)$sp->requiredcredits > 0 ? format_float($sp->requiredcredits, 1) : '—';
+        $row->cells[] = $catcell;
+        if (!$framework->archived && has_capability('tool/mutrain:manageframeworks', $context)) {
+            $removeurl = new \core\url('/admin/tool/mutrain/management/subperiod_remove.php', ['id' => $sp->id]);
+            $removebutton = new \tool_mulib\output\ajax_form\icon($removeurl, get_string('remove'), 'i/delete');
+            $removebutton->set_form_size('sm');
+            $row->cells[] = $OUTPUT->render($removebutton);
+        } else {
+            $row->cells[] = '';
+        }
+        $sptable->data[] = $row;
+    }
+    echo html_writer::table($sptable);
+} else {
+    echo html_writer::tag('p', get_string('nosubperiods', 'tool_mutrain'), ['class' => 'text-muted']);
+}
+
+if (!$framework->archived && has_capability('tool/mutrain:manageframeworks', $context)) {
+    $addurl = new \core\url('/admin/tool/mutrain/management/subperiod_add.php', ['id' => $framework->id]);
+    $addbutton = new \tool_mulib\output\ajax_form\button($addurl, get_string('subperiodadd', 'tool_mutrain'));
+    echo '<br /><div class="buttons">' . $OUTPUT->render($addbutton) . '</div>';
+}
+
 echo $OUTPUT->footer();

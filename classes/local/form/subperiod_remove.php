@@ -16,25 +16,33 @@
 
 // phpcs:disable moodle.Files.BoilerplateComment.CommentEndedTooSoon
 
+namespace tool_mutrain\local\form;
+
 /**
- * Training credits plugin.
+ * Remove sub-period requirement from training framework.
  *
  * @package    tool_mutrain
- * @copyright  2025 Petr Skoda
+ * @copyright  2026 Petr Skoda
  * @license    https://www.gnu.org/copyleft/gpl.html GNU GPL v3 or later
  */
+final class subperiod_remove extends \tool_mulib\local\ajax_form {
+    #[\Override]
+    protected function definition() {
+        $mform = $this->_form;
+        $subperiod = $this->_customdata['subperiod'];
 
-defined('MOODLE_INTERNAL') || die();
+        $mform->addElement('hidden', 'id');
+        $mform->setType('id', PARAM_INT);
+        $mform->setDefault('id', $subperiod->id);
 
-/** @var stdClass $plugin */
-$plugin->component = 'tool_mutrain';
-$plugin->version = 2026040600;
-$plugin->requires = 2025041400;
-$plugin->supported = [500, 502];
+        $msg = get_string('subperiodremoveconfirm', 'tool_mutrain', $subperiod->name);
+        $mform->addElement('static', 'confirm', '', $msg);
 
-$plugin->release = 'v5.0.6.06';
+        $this->add_action_buttons(true, get_string('remove'));
+    }
 
-$plugin->dependencies = [
-    'tool_mulib' => 2026032950,
-    'customfield_mutrain' => 2026032950,
-];
+    #[\Override]
+    public function validation($data, $files) {
+        return parent::validation($data, $files);
+    }
+}

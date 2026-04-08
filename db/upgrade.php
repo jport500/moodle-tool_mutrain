@@ -198,5 +198,53 @@ function xmldb_tool_mutrain_upgrade($oldversion) {
         upgrade_plugin_savepoint(true, 2026040590, 'tool', 'mutrain');
     }
 
+    if ($oldversion < 2026040600) {
+        // Create tool_mutrain_framework_subperiod table.
+        $table = new xmldb_table('tool_mutrain_framework_subperiod');
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+        $table->add_field('frameworkid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('name', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('mode', XMLDB_TYPE_CHAR, '8', null, XMLDB_NOTNULL, null, 'relative');
+        $table->add_field('offsetdays', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('lengthdays', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '365');
+        $table->add_field('startdate', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('enddate', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('requiredcredits', XMLDB_TYPE_NUMBER, '10, 5', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('sortorder', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_field('timecreated', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, '0');
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $table->add_key('frameworkid', XMLDB_KEY_FOREIGN, ['frameworkid'], 'tool_mutrain_framework', ['id']);
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        // Create tool_mutrain_subperiod_category table.
+        $table = new xmldb_table('tool_mutrain_subperiod_category');
+        $table->add_field('id', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, XMLDB_SEQUENCE, null);
+        $table->add_field('subperiodid', XMLDB_TYPE_INTEGER, '10', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('categoryname', XMLDB_TYPE_CHAR, '255', null, XMLDB_NOTNULL, null, null);
+        $table->add_field('mincredits', XMLDB_TYPE_NUMBER, '10, 5', null, XMLDB_NOTNULL, null, '0');
+        $table->add_key('primary', XMLDB_KEY_PRIMARY, ['id']);
+        $table->add_key('subperiodid', XMLDB_KEY_FOREIGN, ['subperiodid'], 'tool_mutrain_framework_subperiod', ['id']);
+        if (!$dbman->table_exists($table)) {
+            $dbman->create_table($table);
+        }
+
+        // Add subperiodcompliant column to tool_mutrain_credit.
+        $table = new xmldb_table('tool_mutrain_credit');
+        $field = new xmldb_field('subperiodcompliant', XMLDB_TYPE_INTEGER, '1', null, null, null, null, 'categorycompliant');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        // Add subperiodalert column to tool_mutrain_credit.
+        $field = new xmldb_field('subperiodalert', XMLDB_TYPE_INTEGER, '1', null, XMLDB_NOTNULL, null, '0', 'subperiodcompliant');
+        if (!$dbman->field_exists($table, $field)) {
+            $dbman->add_field($table, $field);
+        }
+
+        upgrade_plugin_savepoint(true, 2026040600, 'tool', 'mutrain');
+    }
+
     return true;
 }
