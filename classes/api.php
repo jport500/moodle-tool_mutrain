@@ -166,6 +166,54 @@ final class api {
     }
 
     /**
+     * Get native course completion credits for a user/framework pair.
+     * Returns an array of stdClass objects shaped like ledger rows so
+     * they can be merged with ledger entries for display.
+     * These rows are read-only — they cannot be revoked.
+     */
+    public static function get_user_course_completions(
+        int $userid,
+        int $frameworkid
+    ): array {
+        global $DB;
+
+        $sql = "SELECT
+                    ctc.timecompleted AS timecredited,
+                    c.fullname        AS activityname,
+                    cf.name           AS provider,
+                    SUM(cd.decvalue)  AS credits,
+                    'course_completion' AS sourcetype
+                FROM {tool_mutrain_completion} ctc
+                JOIN {context} ctx ON ctx.id = ctc.contextid
+                    AND ctx.contextlevel = :courselevel
+                JOIN {course} c ON c.id = ctx.instanceid
+                JOIN {customfield_field} cf ON cf.id = ctc.fieldid
+                JOIN {customfield_data} cd ON cd.fieldid = cf.id
+                    AND cd.instanceid = ctc.instanceid
+                    AND cd.decvalue IS NOT NULL
+                JOIN {tool_mutrain_field} tf ON tf.fieldid = cf.id
+                JOIN {tool_mutrain_framework} tfr ON tfr.id = tf.frameworkid
+                    AND tfr.id = :frameworkid
+                    AND tfr.archived = 0
+                LEFT JOIN {tool_mulib_context_map} cm
+                    ON cm.contextid = ctc.contextid
+                    AND cm.relatedcontextid = tfr.contextid
+               WHERE ctc.userid = :userid
+                 AND (tfr.restrictafter IS NULL
+                      OR ctc.timecompleted >= tfr.restrictafter)
+                 AND (tfr.restrictcontext = 0 OR cm.id IS NOT NULL)
+            GROUP BY ctc.timecompleted, c.fullname, cf.name";
+
+        $params = [
+            'courselevel' => CONTEXT_COURSE,
+            'frameworkid' => $frameworkid,
+            'userid'      => $userid,
+        ];
+
+        return array_values($DB->get_records_sql($sql, $params));
+    }
+
+    /**
      * Revoke a specific ledger record.
      *
      * @param int $ledgerid

@@ -76,9 +76,33 @@ echo html_writer::tag('p',
 // Ledger table.
 echo $OUTPUT->heading(get_string('credithistory', 'local_cesubmit'), 4);
 
-$entries = \tool_mutrain\api::get_user_ledger($userid, $frameworkid, true);
+$ledger = \tool_mutrain\api::get_user_ledger($userid, $frameworkid, true);
 
-if ($entries) {
+// Load native course completion credits and merge with ledger.
+$completions = \tool_mutrain\api::get_user_course_completions(
+    (int)$user->id,
+    (int)$framework->id
+);
+
+// Shape completion rows to match ledger row structure for display.
+foreach ($completions as $comp) {
+    $comp->revokedtime = null;  // never revocable
+    $comp->evidencejson = json_encode([
+        'activityname' => $comp->activityname,
+        'provider'     => $comp->provider,
+        'credittype'   => null,
+        'notes'        => null,
+    ]);
+    $comp->id = null;  // no ledger id — no revoke action
+}
+
+// Merge and sort by date descending.
+$allentries = array_merge($ledger, $completions);
+usort($allentries, function($a, $b) {
+    return (int)$b->timecredited - (int)$a->timecredited;
+});
+
+if ($allentries) {
     $table = new html_table();
     $table->head = [
         get_string('dateofactivity', 'tool_mutrain'),
@@ -91,9 +115,10 @@ if ($entries) {
     ];
     $table->attributes['class'] = 'admintable generaltable';
 
-    foreach ($entries as $entry) {
+    foreach ($allentries as $entry) {
         $ev = $entry->evidencejson ? json_decode($entry->evidencejson, true) : [];
         $isrevoked = !empty($entry->revokedtime);
+        $iscompletion = ($entry->sourcetype === 'course_completion');
 
         $row = new html_table_row();
         if ($isrevoked) {
@@ -110,9 +135,14 @@ if ($entries) {
         $row->cells[] = s($ev['provider'] ?? '-');
         $row->cells[] = s($ev['credittype'] ?? '-');
         $row->cells[] = format_float($entry->credits, 1);
-        $row->cells[] = s($entry->sourcetype);
 
-        if (!$isrevoked) {
+        $sourcecell = s($entry->sourcetype);
+        if ($iscompletion) {
+            $sourcecell .= ' ' . html_writer::span('(read-only)', 'text-muted small ml-1');
+        }
+        $row->cells[] = $sourcecell;
+
+        if (!empty($entry->id) && !$isrevoked) {
             $revokeurl = new core\url('/admin/tool/mutrain/management/credit_revoke.php', [
                 'id' => $entry->id,
                 'userid' => $userid,
